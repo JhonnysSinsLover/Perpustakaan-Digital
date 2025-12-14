@@ -1,0 +1,29 @@
+<RCC>
+    <qresource prefix="/">
+        <file>Main.qml</file>
+        <file>Login.qml</file>
+        <file>ManageStore.qml</file>
+        <file>Stock.qml</file>
+        <file>Dashboard.qml</file>
+        <file>Overview.qml</file>        <file>SettingsPopup.qml</file>
+        <file>ForgotPasswordDialog.qml</file>        <file>CircularProfilePhoto.qml</file>
+        <file>test_weekly_trend.qml</file>
+        <file>test_circular_photo.qml</file>
+        <file>debug_weekly_trend.qml</file>
+        <file>../assets/formLogin.svg</file>
+        <file>../assets/Home.png</file>
+        <file>../assets/Intersect.png</file>
+        <file>../assets/Inventory.png</file>
+        <file>../assets/logoSigmaterial.png</file>
+        <file>../assets/logoSigmaterial.svg</file>
+        <file>../assets/LogOut.png</file>
+        <file>../assets/ManageStore.png</file>
+        <file>../assets/Notification.png</file>
+        <file>../assets/Rectangle2807.png</file>
+        <file>../assets/Search.png</file>
+        <file>../assets/Settings.png</file>
+        <file>../assets/SIGMATERIAL.png</file>
+        <file>../assets/signInButton.svg</file>
+        <file>../assets/stockIcon.png</file>
+    </qresource>
+</RCC>

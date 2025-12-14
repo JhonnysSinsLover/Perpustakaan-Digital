@@ -1,0 +1,1163 @@
+#include "Database.h"
+
+#include <QCryptographicHash>
+#include <QDateTime>
+#include <QDebug>
+#include <QSqlError>
+#include <QSqlQuery>
+#include <QSet>
+
+namespace {
+constexpr const char *kDatabaseName = "perpustakaan.db";
+}
+
+Database::Database(QObject *parent)
+    : QObject(parent)
+    , currentUserId(-1)
+    , m_lastSortCriterion("title")
+{
+}
+
+Database::~Database()
+{
+    if (db.isOpen()) {
+        db.close();
+    }
+    m_bookCache.clear();
+    m_recommendationGraph.clear();
+}
+
+bool Database::initDatabase()
+{
+    if (!QSqlDatabase::contains(QSqlDatabase::defaultConnection)) {
+        db = QSqlDatabase::addDatabase("QSQLITE");
+    } else {
+        db = QSqlDatabase::database(QSqlDatabase::defaultConnection);
+    }
+
+    db.setDatabaseName(kDatabaseName);
+
+    if (!db.open()) {
+        qDebug() << "Error: Failed to connect to database" << db.lastError().text();
+        return false;
+    }
+
+    return createTables();
+}
+
+bool Database::createUser(const QString &username, const QString &password, const QString &fullName)
+{
+    const QString trimmedUsername = username.trimmed();
+    const QString trimmedName = fullName.trimmed();
+
+    if (trimmedUsername.isEmpty() || password.isEmpty()) {
+        qDebug() << "Error: Username and password cannot be empty";
+        return false;
+    }
+
+    if (!getUserByUsername(trimmedUsername).isEmpty()) {
+        qDebug() << "Error: Username already exists";
+        return false;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("INSERT INTO users (username, password_hash, full_name, created_at) VALUES (?, ?, ?, ?)");
+    query.addBindValue(trimmedUsername);
+    query.addBindValue(hashPassword(password));
+    query.addBindValue(trimmedName.isEmpty() ? trimmedUsername : trimmedName);
+    query.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
+
+    if (!query.exec()) {
+        qDebug() << "Error creating user:" << query.lastError().text();
+        return false;
+    }
+
+    return true;
+}
+
+bool Database::authenticateUser(const QString &username, const QString &password)
+{
+    return loginUser(username, password);
+}
+
+bool Database::loginUser(const QString &username, const QString &password)
+{
+    const QString trimmedUsername = username.trimmed();
+
+    if (trimmedUsername.isEmpty() || password.isEmpty()) {
+        qDebug() << "Error: Username and password cannot be empty";
+        return false;
+    }
+
+    const QVariantMap user = getUserByUsername(trimmedUsername);
+    if (user.isEmpty()) {
+        qDebug() << "Error: User not found";
+        return false;
+    }
+
+    const QString storedHash = user.value("password_hash").toString();
+    if (!verifyPassword(password, storedHash)) {
+        qDebug() << "Error: Invalid password";
+        return false;
+    }
+
+    currentUserId = user.value("id").toInt();
+    currentUsername = user.value("username").toString();
+
+    loadBooksFromDatabase();
+    buildGraph();
+    emit booksChanged();
+
+    return true;
+}
+
+void Database::refreshBooks()
+{
+    if (!isUserLoggedIn()) {
+        m_bookCache.clear();
+        m_recommendationGraph.clear();
+        emit booksChanged();
+        return;
+    }
+
+    loadBooksFromDatabase();
+    buildGraph();
+    emit booksChanged();
+}
+
+void Database::logoutUser()
+{
+    currentUserId = -1;
+    currentUsername.clear();
+    m_bookCache.clear();
+    m_recommendationGraph.clear();
+    m_lastSortCriterion = "title";
+    emit booksChanged();
+}
+
+bool Database::isUserLoggedIn() const
+{
+    return currentUserId > 0;
+}
+
+QVariantMap Database::getCurrentUser()
+{
+    QVariantMap user;
+
+    if (!isUserLoggedIn()) {
+        return user;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("SELECT id, username, full_name, profile_photo, created_at FROM users WHERE id = ?");
+    query.addBindValue(currentUserId);
+
+    if (query.exec() && query.next()) {
+        user.insert("id", query.value("id"));
+        user.insert("username", query.value("username"));
+        user.insert("full_name", query.value("full_name"));
+        user.insert("profile_photo", query.value("profile_photo"));
+        user.insert("created_at", query.value("created_at"));
+    }
+
+    return user;
+}
+
+QVariantMap Database::getUserById(int userId)
+{
+    QVariantMap user;
+
+    if (userId <= 0) {
+        qDebug() << "Error: Invalid user ID";
+        return user;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("SELECT id, username, full_name, profile_photo, created_at FROM users WHERE id = ?");
+    query.addBindValue(userId);
+
+    if (query.exec() && query.next()) {
+        user.insert("id", query.value("id"));
+        user.insert("username", query.value("username"));
+        user.insert("full_name", query.value("full_name"));
+        user.insert("profile_photo", query.value("profile_photo"));
+        user.insert("created_at", query.value("created_at"));
+    }
+
+    return user;
+}
+
+QVariantList Database::getAllUsers()
+{
+    QVariantList users;
+
+    QSqlQuery query(db);
+    query.prepare("SELECT id, username, full_name, profile_photo, created_at FROM users ORDER BY id ASC");
+
+    if (query.exec()) {
+        while (query.next()) {
+            QVariantMap user;
+            user.insert("id", query.value("id"));
+            user.insert("username", query.value("username"));
+            user.insert("full_name", query.value("full_name"));
+            user.insert("profile_photo", query.value("profile_photo"));
+            user.insert("created_at", query.value("created_at"));
+            users.append(user);
+        }
+    } else {
+        qDebug() << "Error retrieving users:" << query.lastError().text();
+    }
+
+    return users;
+}
+
+bool Database::deleteUser(int userId)
+{
+    if (userId <= 0) {
+        qDebug() << "Error: Invalid user ID";
+        return false;
+    }
+
+    if (userId == currentUserId) {
+        qDebug() << "Error: Cannot delete the currently logged in user";
+        return false;
+    }
+
+    if (!db.transaction()) {
+        qDebug() << "Error starting transaction:" << db.lastError().text();
+        return false;
+    }
+
+    QSqlQuery deleteBooks(db);
+    deleteBooks.prepare("DELETE FROM books WHERE user_id = ?");
+    deleteBooks.addBindValue(userId);
+    if (!deleteBooks.exec()) {
+        qDebug() << "Error deleting user books:" << deleteBooks.lastError().text();
+        db.rollback();
+        return false;
+    }
+
+    QSqlQuery deleteUserQuery(db);
+    deleteUserQuery.prepare("DELETE FROM users WHERE id = ?");
+    deleteUserQuery.addBindValue(userId);
+    if (!deleteUserQuery.exec()) {
+        qDebug() << "Error deleting user:" << deleteUserQuery.lastError().text();
+        db.rollback();
+        return false;
+    }
+
+    if (!db.commit()) {
+        qDebug() << "Error committing transaction:" << db.lastError().text();
+        return false;
+    }
+
+    return true;
+}
+
+bool Database::setCurrentUser(int userId)
+{
+    if (userId <= 0) {
+        qDebug() << "Error: Invalid user ID";
+        return false;
+    }
+
+    const QVariantMap user = getUserById(userId);
+    if (user.isEmpty()) {
+        qDebug() << "Error: User not found";
+        return false;
+    }
+
+    currentUserId = userId;
+    currentUsername = user.value("username").toString();
+
+    loadBooksFromDatabase();
+    buildGraph();
+    emit booksChanged();
+
+    return true;
+}
+
+int Database::getCurrentUserId() const
+{
+    return currentUserId;
+}
+
+QString Database::getCurrentUsername() const
+{
+    return currentUsername;
+}
+
+bool Database::updateUserProfile(const QString &fullName)
+{
+    if (!isUserLoggedIn()) {
+        qDebug() << "Error: No user logged in";
+        return false;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("UPDATE users SET full_name = ? WHERE id = ?");
+    query.addBindValue(fullName.trimmed());
+    query.addBindValue(currentUserId);
+
+    if (!query.exec()) {
+        qDebug() << "Error updating user profile:" << query.lastError().text();
+        return false;
+    }
+
+    return true;
+}
+
+bool Database::updateUserProfileWithPhoto(const QString &fullName, const QString &profilePhotoPath)
+{
+    if (!isUserLoggedIn()) {
+        qDebug() << "Error: No user logged in";
+        return false;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("UPDATE users SET full_name = ?, profile_photo = ? WHERE id = ?");
+    query.addBindValue(fullName.trimmed());
+    query.addBindValue(profilePhotoPath.trimmed());
+    query.addBindValue(currentUserId);
+
+    if (!query.exec()) {
+        qDebug() << "Error updating user profile with photo:" << query.lastError().text();
+        return false;
+    }
+
+    return true;
+}
+
+bool Database::changePassword(const QString &currentPassword, const QString &newPassword)
+{
+    if (!isUserLoggedIn()) {
+        qDebug() << "Error: No user logged in";
+        return false;
+    }
+
+    if (currentPassword.isEmpty() || newPassword.isEmpty()) {
+        qDebug() << "Error: Passwords cannot be empty";
+        return false;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("SELECT password_hash FROM users WHERE id = ?");
+    query.addBindValue(currentUserId);
+
+    if (!query.exec() || !query.next()) {
+        qDebug() << "Error retrieving user password:" << query.lastError().text();
+        return false;
+    }
+
+    const QString storedHash = query.value("password_hash").toString();
+    if (!verifyPassword(currentPassword, storedHash)) {
+        qDebug() << "Error: Current password is incorrect";
+        return false;
+    }
+
+    QSqlQuery updateQuery(db);
+    updateQuery.prepare("UPDATE users SET password_hash = ? WHERE id = ?");
+    updateQuery.addBindValue(hashPassword(newPassword));
+    updateQuery.addBindValue(currentUserId);
+
+    if (!updateQuery.exec()) {
+        qDebug() << "Error updating password:" << updateQuery.lastError().text();
+        return false;
+    }
+
+    return true;
+}
+
+bool Database::updateUserPassword(int userId, const QString &newPassword)
+{
+    if (userId <= 0) {
+        qDebug() << "Error: Invalid user ID";
+        return false;
+    }
+
+    if (newPassword.isEmpty()) {
+        qDebug() << "Error: New password cannot be empty";
+        return false;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("UPDATE users SET password_hash = ? WHERE id = ?");
+    query.addBindValue(hashPassword(newPassword));
+    query.addBindValue(userId);
+
+    if (!query.exec()) {
+        qDebug() << "Error updating user password:" << query.lastError().text();
+        return false;
+    }
+
+    return true;
+}
+
+bool Database::setRecoveryKey(const QString &recoveryKey)
+{
+    if (!isUserLoggedIn()) {
+        qDebug() << "Error: No user logged in";
+        return false;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("UPDATE users SET recovery_key = ? WHERE id = ?");
+    query.addBindValue(recoveryKey.trimmed());
+    query.addBindValue(currentUserId);
+
+    if (!query.exec()) {
+        qDebug() << "Error setting recovery key:" << query.lastError().text();
+        return false;
+    }
+
+    return true;
+}
+
+bool Database::verifyRecoveryKey(const QString &username, const QString &recoveryKey)
+{
+    const QString trimmedUsername = username.trimmed();
+    const QString trimmedKey = recoveryKey.trimmed();
+
+    if (trimmedUsername.isEmpty() || trimmedKey.isEmpty()) {
+        qDebug() << "Error: Username and recovery key cannot be empty";
+        return false;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("SELECT id FROM users WHERE username = ? AND recovery_key = ?");
+    query.addBindValue(trimmedUsername);
+    query.addBindValue(trimmedKey);
+
+    if (!query.exec()) {
+        qDebug() << "Error verifying recovery key:" << query.lastError().text();
+        return false;
+    }
+
+    return query.next();
+}
+
+bool Database::resetPasswordWithRecovery(const QString &username, const QString &recoveryKey, const QString &newPassword)
+{
+    if (!verifyRecoveryKey(username, recoveryKey)) {
+        qDebug() << "Error: Invalid recovery key";
+        return false;
+    }
+
+    if (newPassword.isEmpty()) {
+        qDebug() << "Error: New password cannot be empty";
+        return false;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("UPDATE users SET password_hash = ? WHERE username = ?");
+    query.addBindValue(hashPassword(newPassword));
+    query.addBindValue(username.trimmed());
+
+    if (!query.exec()) {
+        qDebug() << "Error resetting password:" << query.lastError().text();
+        return false;
+    }
+
+    return true;
+}
+
+bool Database::hasRecoveryKey(const QString &username)
+{
+    const QString trimmedUsername = username.trimmed();
+
+    if (trimmedUsername.isEmpty()) {
+        qDebug() << "Error: Username cannot be empty";
+        return false;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("SELECT recovery_key FROM users WHERE username = ?");
+    query.addBindValue(trimmedUsername);
+
+    if (!query.exec() || !query.next()) {
+        qDebug() << "Error checking recovery key:" << query.lastError().text();
+        return false;
+    }
+
+    return !query.value("recovery_key").toString().isEmpty();
+}
+
+bool Database::currentUserHasRecoveryKey()
+{
+    if (!isUserLoggedIn()) {
+        qDebug() << "Error: No user logged in";
+        return false;
+    }
+
+    return hasRecoveryKey(currentUsername);
+}
+
+bool Database::addBook(const QString &title,
+                       const QString &genre,
+                       const QString &author,
+                       const QString &publisher,
+                       int year,
+                       int copies,
+                       const QString &imagePath)
+{
+    if (!isUserLoggedIn()) {
+        qDebug() << "Error: No user logged in";
+        return false;
+    }
+
+    if (title.trimmed().isEmpty()) {
+        qDebug() << "Error: Book title cannot be empty";
+        return false;
+    }
+
+    QSqlQuery query(db);
+    query.prepare(
+        "INSERT INTO books (user_id, title, genre, author, publisher, year, copies, image_path)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    );
+    query.addBindValue(currentUserId);
+    query.addBindValue(title.trimmed());
+    query.addBindValue(genre.trimmed());
+    query.addBindValue(author.trimmed());
+    query.addBindValue(publisher.trimmed());
+    query.addBindValue(year);
+    query.addBindValue(copies);
+    query.addBindValue(imagePath.trimmed());
+
+    if (!query.exec()) {
+        qDebug() << "Error adding book:" << query.lastError().text();
+        return false;
+    }
+
+    Book book;
+    book.id = query.lastInsertId().toInt();
+    book.title = title.trimmed();
+    book.genre = genre.trimmed();
+    book.author = author.trimmed();
+    book.publisher = publisher.trimmed();
+    book.year = year;
+    book.copies = copies;
+    book.imagePath = imagePath.trimmed();
+
+    m_bookCache.append(book);
+    resortCache();
+    buildGraph();
+    emit booksChanged();
+
+    return true;
+}
+
+bool Database::updateBook(int id,
+                          const QString &title,
+                          const QString &genre,
+                          const QString &author,
+                          const QString &publisher,
+                          int year,
+                          int copies,
+                          const QString &imagePath)
+{
+    if (!isUserLoggedIn()) {
+        qDebug() << "Error: No user logged in";
+        return false;
+    }
+
+    if (id <= 0) {
+        qDebug() << "Error: Invalid book ID";
+        return false;
+    }
+
+    QSqlQuery query(db);
+    query.prepare(
+        "UPDATE books SET title = ?, genre = ?, author = ?, publisher = ?, year = ?, copies = ?, image_path = ?"
+        " WHERE id = ? AND user_id = ?"
+    );
+    query.addBindValue(title.trimmed());
+    query.addBindValue(genre.trimmed());
+    query.addBindValue(author.trimmed());
+    query.addBindValue(publisher.trimmed());
+    query.addBindValue(year);
+    query.addBindValue(copies);
+    query.addBindValue(imagePath.trimmed());
+    query.addBindValue(id);
+    query.addBindValue(currentUserId);
+
+    if (!query.exec()) {
+        qDebug() << "Error updating book:" << query.lastError().text();
+        return false;
+    }
+
+    bool updated = false;
+    for (Book &book : m_bookCache) {
+        if (book.id == id) {
+            book.title = title.trimmed();
+            book.genre = genre.trimmed();
+            book.author = author.trimmed();
+            book.publisher = publisher.trimmed();
+            book.year = year;
+            book.copies = copies;
+            book.imagePath = imagePath.trimmed();
+            updated = true;
+            break;
+        }
+    }
+
+    if (!updated) {
+        loadBooksFromDatabase();
+    } else {
+        resortCache();
+    }
+
+    buildGraph();
+    emit booksChanged();
+
+    return true;
+}
+
+bool Database::deleteBook(int id)
+{
+    if (!isUserLoggedIn()) {
+        qDebug() << "Error: No user logged in";
+        return false;
+    }
+
+    if (id <= 0) {
+        qDebug() << "Error: Invalid book ID";
+        return false;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("DELETE FROM books WHERE id = ? AND user_id = ?");
+    query.addBindValue(id);
+    query.addBindValue(currentUserId);
+
+    if (!query.exec()) {
+        qDebug() << "Error deleting book:" << query.lastError().text();
+        return false;
+    }
+
+    for (int i = 0; i < m_bookCache.size(); ++i) {
+        if (m_bookCache[i].id == id) {
+            m_bookCache.removeAt(i);
+            break;
+        }
+    }
+
+    buildGraph();
+    emit booksChanged();
+
+    return true;
+}
+
+QVariantList Database::getAllBooks()
+{
+    if (!isUserLoggedIn()) {
+        qDebug() << "Error: No user logged in";
+        return QVariantList();
+    }
+
+    if (m_bookCache.isEmpty()) {
+        loadBooksFromDatabase();
+        buildGraph();
+    }
+
+    return booksToVariantList(m_bookCache);
+}
+
+void Database::sortBooks(const QString &criteria)
+{
+    if (m_bookCache.size() <= 1) {
+        return;
+    }
+
+    const bool sortByTitle = criteria.compare("title", Qt::CaseInsensitive) == 0;
+    const bool sortByYear = criteria.compare("year", Qt::CaseInsensitive) == 0;
+
+    if (!sortByTitle && !sortByYear) {
+        qDebug() << "Warning: Unsupported sort criteria" << criteria;
+        return;
+    }
+
+    mergeSort(m_bookCache, 0, m_bookCache.size() - 1, sortByTitle);
+    m_lastSortCriterion = sortByTitle ? "title" : "year";
+    emit booksChanged();
+}
+
+QVariantList Database::searchBookManual(const QString &query)
+{
+    QVariantList results;
+
+    if (!isUserLoggedIn()) {
+        qDebug() << "Error: No user logged in";
+        return results;
+    }
+
+    const QString trimmedQuery = query.trimmed();
+    if (trimmedQuery.isEmpty()) {
+        return results;
+    }
+
+    ensureSortedByTitle();
+
+    if (m_bookCache.isEmpty()) {
+        return results;
+    }
+
+    const int index = binarySearch(m_bookCache, trimmedQuery);
+    if (index >= 0) {
+        results.append(bookToVariantMap(m_bookCache[index]));
+        return results;
+    }
+
+    const QString loweredQuery = trimmedQuery.toLower();
+    for (const Book &book : m_bookCache) {
+        if (book.title.toLower().contains(loweredQuery)) {
+            results.append(bookToVariantMap(book));
+        }
+    }
+
+    return results;
+}
+
+QVariantList Database::getRecommendations(int bookId)
+{
+    QVariantList results;
+
+    if (!isUserLoggedIn()) {
+        qDebug() << "Error: No user logged in";
+        return results;
+    }
+
+    if (!m_recommendationGraph.contains(bookId)) {
+        buildGraph();
+        if (!m_recommendationGraph.contains(bookId)) {
+            return results;
+        }
+    }
+
+    QSet<int> visited;
+    QList<int> queue;
+
+    visited.insert(bookId);
+    queue.append(bookId);
+
+    while (!queue.isEmpty()) {
+        const int current = queue.takeFirst();
+        const QList<int> neighbors = m_recommendationGraph.value(current);
+
+        for (int neighbor : neighbors) {
+            if (!visited.contains(neighbor)) {
+                visited.insert(neighbor);
+                queue.append(neighbor);
+
+                const Book *neighborBook = findBookById(neighbor);
+                if (neighborBook) {
+                    results.append(bookToVariantMap(*neighborBook));
+                }
+            }
+        }
+    }
+
+    return results;
+}
+
+QString Database::getTopGenre()
+{
+    if (!isUserLoggedIn() || m_bookCache.isEmpty()) {
+        return "Belum ada data";
+    }
+
+    QMap<QString, int> genreCount;
+    for (const Book &book : m_bookCache) {
+        if (!book.genre.isEmpty()) {
+            genreCount[book.genre]++;
+        }
+    }
+
+    if (genreCount.isEmpty()) {
+        return "Belum ada genre";
+    }
+
+    QString topGenre;
+    int maxCount = 0;
+    for (auto it = genreCount.constBegin(); it != genreCount.constEnd(); ++it) {
+        if (it.value() > maxCount) {
+            maxCount = it.value();
+            topGenre = it.key();
+        }
+    }
+
+    return topGenre;
+}
+
+QString Database::getLastAddedTitle()
+{
+    if (!isUserLoggedIn()) {
+        return "Belum login";
+    }
+
+    QSqlQuery query(db);
+    query.prepare("SELECT title FROM books WHERE user_id = ? ORDER BY created_at DESC LIMIT 1");
+    query.addBindValue(currentUserId);
+
+    if (query.exec() && query.next()) {
+        return query.value("title").toString();
+    }
+
+    return "Belum ada buku";
+}
+
+QString Database::hashPassword(const QString &password)
+{
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(password.toUtf8());
+    return QString::fromLatin1(hash.result().toHex());
+}
+
+bool Database::verifyPassword(const QString &password, const QString &hashedPassword)
+{
+    return hashPassword(password) == hashedPassword;
+}
+
+QVariantMap Database::getUserByUsername(const QString &username)
+{
+    QVariantMap user;
+
+    const QString trimmedUsername = username.trimmed();
+    if (trimmedUsername.isEmpty()) {
+        return user;
+    }
+
+    QSqlQuery query(db);
+    query.prepare(
+        "SELECT id, username, password_hash, full_name, profile_photo, recovery_key, created_at"
+        " FROM users WHERE username = ?"
+    );
+    query.addBindValue(trimmedUsername);
+
+    if (query.exec() && query.next()) {
+        user.insert("id", query.value("id"));
+        user.insert("username", query.value("username"));
+        user.insert("password_hash", query.value("password_hash"));
+        user.insert("full_name", query.value("full_name"));
+        user.insert("profile_photo", query.value("profile_photo"));
+        user.insert("recovery_key", query.value("recovery_key"));
+        user.insert("created_at", query.value("created_at"));
+    }
+
+    return user;
+}
+
+void Database::loadBooksFromDatabase()
+{
+    m_bookCache.clear();
+
+    if (!isUserLoggedIn()) {
+        return;
+    }
+
+    QSqlQuery query(db);
+    query.prepare("SELECT id, title, genre, author, publisher, year, copies, image_path FROM books WHERE user_id = ?");
+    query.addBindValue(currentUserId);
+
+    if (!query.exec()) {
+        qDebug() << "Error loading books:" << query.lastError().text();
+        return;
+    }
+
+    while (query.next()) {
+        Book book;
+        book.id = query.value("id").toInt();
+        book.title = query.value("title").toString();
+        book.genre = query.value("genre").toString();
+        book.author = query.value("author").toString();
+        book.publisher = query.value("publisher").toString();
+        book.year = query.value("year").toInt();
+        book.copies = query.value("copies").toInt();
+        book.imagePath = query.value("image_path").toString();
+        m_bookCache.append(book);
+    }
+
+    if (m_bookCache.size() > 1) {
+        mergeSort(m_bookCache, 0, m_bookCache.size() - 1, true);
+    }
+    m_lastSortCriterion = "title";
+}
+
+void Database::buildGraph()
+{
+    m_recommendationGraph.clear();
+
+    if (m_bookCache.isEmpty()) {
+        return;
+    }
+
+    for (const Book &book : m_bookCache) {
+        m_recommendationGraph.insert(book.id, QList<int>());
+    }
+
+    for (int i = 0; i < m_bookCache.size(); ++i) {
+        for (int j = i + 1; j < m_bookCache.size(); ++j) {
+            const Book &leftBook = m_bookCache[i];
+            const Book &rightBook = m_bookCache[j];
+
+            const bool sameGenre = !leftBook.genre.isEmpty() && leftBook.genre.compare(rightBook.genre, Qt::CaseInsensitive) == 0;
+            const bool sameAuthor = !leftBook.author.isEmpty() && leftBook.author.compare(rightBook.author, Qt::CaseInsensitive) == 0;
+
+            if (sameGenre || sameAuthor) {
+                QList<int> &leftEdges = m_recommendationGraph[leftBook.id];
+                if (!leftEdges.contains(rightBook.id)) {
+                    leftEdges.append(rightBook.id);
+                }
+
+                QList<int> &rightEdges = m_recommendationGraph[rightBook.id];
+                if (!rightEdges.contains(leftBook.id)) {
+                    rightEdges.append(leftBook.id);
+                }
+            }
+        }
+    }
+}
+
+void Database::mergeSort(QVector<Book> &list, int left, int right, bool byTitle)
+{
+    if (left >= right) {
+        return;
+    }
+
+    const int mid = left + (right - left) / 2;
+    mergeSort(list, left, mid, byTitle);
+    mergeSort(list, mid + 1, right, byTitle);
+    merge(list, left, mid, right, byTitle);
+}
+
+void Database::merge(QVector<Book> &list, int left, int mid, int right, bool byTitle)
+{
+    const int leftSize = mid - left + 1;
+    const int rightSize = right - mid;
+
+    QVector<Book> leftList(leftSize);
+    QVector<Book> rightList(rightSize);
+
+    for (int i = 0; i < leftSize; ++i) {
+        leftList[i] = list[left + i];
+    }
+    for (int j = 0; j < rightSize; ++j) {
+        rightList[j] = list[mid + 1 + j];
+    }
+
+    int i = 0;
+    int j = 0;
+    int k = left;
+
+    while (i < leftSize && j < rightSize) {
+        if (bookLessThan(leftList[i], rightList[j], byTitle)) {
+            list[k++] = leftList[i++];
+        } else {
+            list[k++] = rightList[j++];
+        }
+    }
+
+    while (i < leftSize) {
+        list[k++] = leftList[i++];
+    }
+
+    while (j < rightSize) {
+        list[k++] = rightList[j++];
+    }
+}
+
+bool Database::bookLessThan(const Book &leftBook, const Book &rightBook, bool byTitle) const
+{
+    if (byTitle) {
+        const QString leftTitle = leftBook.title.toLower();
+        const QString rightTitle = rightBook.title.toLower();
+        if (leftTitle == rightTitle) {
+            return leftBook.id < rightBook.id;
+        }
+        return leftTitle < rightTitle;
+    }
+
+    if (leftBook.year == rightBook.year) {
+        return leftBook.id < rightBook.id;
+    }
+    return leftBook.year < rightBook.year;
+}
+
+void Database::resortCache()
+{
+    if (m_bookCache.size() <= 1) {
+        return;
+    }
+
+    if (m_lastSortCriterion.compare("year", Qt::CaseInsensitive) == 0) {
+        mergeSort(m_bookCache, 0, m_bookCache.size() - 1, false);
+    } else {
+        mergeSort(m_bookCache, 0, m_bookCache.size() - 1, true);
+        m_lastSortCriterion = "title";
+    }
+}
+
+void Database::ensureSortedByTitle()
+{
+    if (m_bookCache.size() <= 1) {
+        m_lastSortCriterion = "title";
+        return;
+    }
+
+    if (m_lastSortCriterion.compare("title", Qt::CaseInsensitive) != 0) {
+        mergeSort(m_bookCache, 0, m_bookCache.size() - 1, true);
+        m_lastSortCriterion = "title";
+    }
+}
+
+int Database::binarySearch(const QVector<Book> &list, const QString &title) const
+{
+    if (list.isEmpty()) {
+        return -1;
+    }
+
+    const QString target = title.trimmed().toLower();
+    int left = 0;
+    int right = list.size() - 1;
+
+    while (left <= right) {
+        const int mid = left + (right - left) / 2;
+        const QString midTitle = list[mid].title.toLower();
+
+        if (midTitle == target) {
+            return mid;
+        }
+
+        if (midTitle < target) {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+
+    return -1;
+}
+
+QVariantMap Database::bookToVariantMap(const Book &book) const
+{
+    QVariantMap map;
+    map.insert("id", book.id);
+    map.insert("title", book.title);
+    map.insert("genre", book.genre);
+    map.insert("author", book.author);
+    map.insert("publisher", book.publisher);
+    map.insert("year", book.year);
+    map.insert("copies", book.copies);
+    map.insert("image_path", book.imagePath);
+    return map;
+}
+
+QVariantList Database::booksToVariantList(const QVector<Book> &list) const
+{
+    QVariantList variantList;
+    variantList.reserve(list.size());
+    for (const Book &book : list) {
+        variantList.append(bookToVariantMap(book));
+    }
+    return variantList;
+}
+
+const Database::Book *Database::findBookById(int id) const
+{
+    for (const Book &book : m_bookCache) {
+        if (book.id == id) {
+            return &book;
+        }
+    }
+    return nullptr;
+}
+
+bool Database::createTables()
+{
+    QSqlQuery query(db);
+
+    bool success = query.exec(
+        "CREATE TABLE IF NOT EXISTS users ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "username TEXT UNIQUE NOT NULL,"
+        "password_hash TEXT NOT NULL,"
+        "full_name TEXT,"
+        "profile_photo TEXT,"
+        "recovery_key TEXT,"
+        "created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+        ")"
+    );
+
+    if (!success) {
+        qDebug() << "Error creating users table:" << query.lastError().text();
+        return false;
+    }
+
+    QSqlQuery columnCheck(db);
+    columnCheck.exec("PRAGMA table_info(users)");
+
+    bool hasProfilePhoto = false;
+    bool hasRecoveryKey = false;
+
+    while (columnCheck.next()) {
+        const QString columnName = columnCheck.value("name").toString();
+        if (columnName == "profile_photo") {
+            hasProfilePhoto = true;
+        } else if (columnName == "recovery_key") {
+            hasRecoveryKey = true;
+        }
+    }
+
+    if (!hasProfilePhoto) {
+        QSqlQuery addProfilePhoto(db);
+        if (!addProfilePhoto.exec("ALTER TABLE users ADD COLUMN profile_photo TEXT")) {
+            qDebug() << "Error adding profile_photo column:" << addProfilePhoto.lastError().text();
+        }
+    }
+
+    if (!hasRecoveryKey) {
+        QSqlQuery addRecoveryKey(db);
+        if (!addRecoveryKey.exec("ALTER TABLE users ADD COLUMN recovery_key TEXT")) {
+            qDebug() << "Error adding recovery_key column:" << addRecoveryKey.lastError().text();
+        }
+    }
+
+    success = query.exec(
+        "CREATE TABLE IF NOT EXISTS books ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "user_id INTEGER NOT NULL,"
+        "title TEXT NOT NULL,"
+        "genre TEXT,"
+        "author TEXT,"
+        "publisher TEXT,"
+        "year INTEGER,"
+        "copies INTEGER NOT NULL DEFAULT 0,"
+        "image_path TEXT,"
+        "created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+        "FOREIGN KEY (user_id) REFERENCES users (id)"
+        ")"
+    );
+
+    if (!success) {
+        qDebug() << "Error creating books table:" << query.lastError().text();
+        return false;
+    }
+
+    QSqlQuery checkUsers(db);
+    checkUsers.exec("SELECT COUNT(*) FROM users");
+    if (checkUsers.next() && checkUsers.value(0).toInt() == 0) {
+        QSqlQuery createDefaultUser(db);
+        createDefaultUser.prepare("INSERT INTO users (username, password_hash, full_name) VALUES (?, ?, ?)");
+        createDefaultUser.addBindValue("admin");
+        createDefaultUser.addBindValue(hashPassword("admin123"));
+        createDefaultUser.addBindValue("Administrator");
+
+        if (!createDefaultUser.exec()) {
+            qDebug() << "Error creating default user:" << createDefaultUser.lastError().text();
+        } else {
+            qDebug() << "Default admin user created (username: admin, password: admin123)";
+        }
+    }
+
+    return true;
+}

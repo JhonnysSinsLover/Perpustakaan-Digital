@@ -1,0 +1,21 @@
+*.md
+*.ps1
+*.bat
+
+build/
+build-*/
+cmake-build-*/
+
+# File konfig user Qt Creator
+CMakeLists.txt.user
+*.pro.user
+*.user
+
+# File cache CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+*.exe
+*.dll
