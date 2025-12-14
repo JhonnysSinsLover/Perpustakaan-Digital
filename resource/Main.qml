@@ -5,459 +5,472 @@ import QtQuick.Window 2.15
 
 Window {
     id: mainWindow
-    width: Screen.width
-    height: Screen.height
+    width: 1400
+    height: 900
+    visible: true
+    title: "Sistem Perpustakaan Digital 2025"
     minimumWidth: 1200
     minimumHeight: 700
-    visible: true
-    title: "Library Management System"
-    flags: Qt.Window | Qt.FramelessWindowHint
-    
+
+    // Color Theme
+    property color primaryColor: "#1565C0"
+    property color primaryDark: "#0D47A1"
+    property color primaryLight: "#E3F2FD"
+    property color accentColor: "#FF9800"
+    property color textPrimary: "#212121"
+    property color textSecondary: "#757575"
+    property color background: "#F8FAFC"
+
+    // Application State
     property int currentIndex: 0
     property string currentPageTitle: "Dashboard"
-    
-    // Bind properties from C++
-    property bool loggedIn: appLogic ? appLogic.loggedIn : false
-    
-    Connections {
-        target: appLogic
-        function onLoggedInChanged() {
-            if (appLogic.loggedIn) {
-                currentIndex = 0
-            }
+    property bool isUserLoggedIn: appLogic ? appLogic.loggedIn : false
+
+    onIsUserLoggedInChanged: {
+        if (isUserLoggedIn) {
+            currentIndex = 0
+            currentPageTitle = "Dashboard"
         }
     }
-    
-    function logout() {
-        if (database) {
-            database.logoutUser()
-        }
-        if (appLogic) {
-            appLogic.logout()
-        }
+
+    // Functions
+    function logoutSystem() {
+        if (database) database.logoutUser()
+        if (appLogic) appLogic.logout()
     }
-    
-    // Window drag functionality
-    MouseArea {
+
+    function formatNumber(num) {
+        return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+    }
+
+    // --- MAIN LAYOUT (Sidebar + Content) ---
+    RowLayout {
         anchors.fill: parent
-        property point lastMousePos: Qt.point(0, 0)
-        onPressed: function(mouse) { 
-            lastMousePos = Qt.point(mouse.x, mouse.y)
-        }
-        onPositionChanged: function(mouse) {
-            if (pressed) {
-                mainWindow.x += (mouse.x - lastMousePos.x)
-                mainWindow.y += (mouse.y - lastMousePos.y)
-            }
-        }
-    }
-    
-    // Title Bar
-    Rectangle {
-        id: titleBar
-        width: parent.width
-        height: 32
-        color: "#0D47A1"
-        z: 1000
-        
-        Row {
-            anchors.right: parent.right
-            spacing: 0
-            
-            Rectangle {
-                width: 46
-                height: 32
-                color: "transparent"
-                Text {
-                    anchors.centerIn: parent
-                    text: "−"
-                    color: "#FFFFFF"
-                    font.pixelSize: 16
-                }
-                MouseArea {
-                    anchors.fill: parent
-                    onClicked: mainWindow.showMinimized()
-                    hoverEnabled: true
-                    onEntered: parent.color = "#1565C0"
-                    onExited: parent.color = "transparent"
-                }
-            }
-            
-            Rectangle {
-                width: 46
-                height: 32
-                color: "transparent"
-                Text {
-                    anchors.centerIn: parent
-                    text: "□"
-                    color: "#FFFFFF"
-                    font.pixelSize: 14
-                }
-                MouseArea {
-                    anchors.fill: parent
-                    onClicked: {
-                        if (mainWindow.visibility === Window.Maximized) {
-                            mainWindow.showNormal()
-                        } else {
-                            mainWindow.showMaximized()
-                        }
-                    }
-                    hoverEnabled: true
-                    onEntered: parent.color = "#1565C0"
-                    onExited: parent.color = "transparent"
-                }
-            }
-            
-            Rectangle {
-                width: 46
-                height: 32
-                color: "transparent"
-                Text {
-                    anchors.centerIn: parent
-                    text: "×"
-                    color: "#FFFFFF"
-                    font.pixelSize: 16
-                }
-                MouseArea {
-                    anchors.fill: parent
-                    onClicked: mainWindow.close()
-                    hoverEnabled: true
-                    onEntered: parent.color = "#D32F2F"
-                    onExited: parent.color = "transparent"
-                }
-            }
-        }
-    }
-    
-    // Main Content Area
-    Rectangle {
-        anchors.top: titleBar.bottom
-        width: parent.width
-        height: parent.height - titleBar.height
-        color: "#F5F7FA"
-        
-        Component {
-            id: loginComponent
-            Login {
-                onLoginSuccess: {
-                    if (appLogic) {
-                        appLogic.login()
-                    }
-                }
-            }
-        }
-        
-        // Main Layout with Sidebar
-        RowLayout {
-            anchors.fill: parent
-            spacing: 0
-            visible: appLogic && appLogic.loggedIn
-            
-            // Sidebar
-            Rectangle {
-                Layout.fillHeight: true
-                Layout.preferredWidth: 250
-                color: "#0D47A1"
-                
-                ColumnLayout {
-                    anchors.fill: parent
-                    spacing: 0
-                    
-                    // Logo/Header
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 100
-                        color: "#0A3A7A"
-                        
-                        ColumnLayout {
-                            anchors.centerIn: parent
-                            spacing: 8
-                            
-                            Text {
-                                text: "📚"
-                                font.pixelSize: 36
-                                color: "#FFFFFF"
-                                Layout.alignment: Qt.AlignHCenter
-                            }
-                            
-                            Text {
-                                text: "Perpustakaan Digital"
-                                font.pixelSize: 15
-                                font.family: "Segoe UI"
-                                font.bold: true
-                                color: "#FFFFFF"
-                                Layout.alignment: Qt.AlignHCenter
-                            }
-                        }
-                    }
-                    
-                    // Menu Items
-                    Item {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        
-                        ColumnLayout {
-                            anchors.top: parent.top
-                            anchors.topMargin: 24
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
-                            spacing: 8
-                            
-                            // Dashboard
-                            Rectangle {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 50
-                                radius: 8
-                                color: currentIndex === 0 ? "#1565C0" : "transparent"
-                                
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 16
-                                    spacing: 14
-                                    
-                                    Text {
-                                        text: "🏠"
-                                        font.pixelSize: 20
-                                        color: "#FFFFFF"
-                                    }
-                                    
-                                    Text {
-                                        text: "Dashboard"
-                                        font.pixelSize: 15
-                                        font.family: "Segoe UI"
-                                        font.weight: Font.Medium
-                                        color: "#FFFFFF"
-                                    }
-                                }
-                                
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        currentIndex = 0
-                                        currentPageTitle = "Dashboard"
-                                    }
-                                    hoverEnabled: true
-                                    onEntered: parent.color = currentIndex === 0 ? "#1565C0" : "#1565C0"
-                                    onExited: parent.color = currentIndex === 0 ? "#1565C0" : "transparent"
-                                }
-                            }
-                            
-                            // Katalog & Peminjaman
-                            Rectangle {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 50
-                                radius: 8
-                                color: currentIndex === 1 ? "#1565C0" : "transparent"
-                                
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 16
-                                    spacing: 14
-                                    
-                                    Text {
-                                        text: "📖"
-                                        font.pixelSize: 20
-                                        color: "#FFFFFF"
-                                    }
-                                    
-                                    Text {
-                                        text: "Katalog Buku"
-                                        font.pixelSize: 15
-                                        font.family: "Segoe UI"
-                                        font.weight: Font.Medium
-                                        color: "#FFFFFF"
-                                    }
-                                }
-                                
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        currentIndex = 1
-                                        currentPageTitle = "Katalog Buku"
-                                    }
-                                    hoverEnabled: true
-                                    onEntered: parent.color = currentIndex === 1 ? "#1565C0" : "#1565C0"
-                                    onExited: parent.color = currentIndex === 1 ? "#1565C0" : "transparent"
-                                }
-                            }
-                            
-                            // Manajemen Buku
-                            Rectangle {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 50
-                                radius: 8
-                                color: currentIndex === 2 ? "#1565C0" : "transparent"
-                                
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 16
-                                    spacing: 14
-                                    
-                                    Text {
-                                        text: "➕"
-                                        font.pixelSize: 20
-                                        color: "#FFFFFF"
-                                    }
-                                    
-                                    Text {
-                                        text: "Tambah Buku"
-                                        font.pixelSize: 15
-                                        font.family: "Segoe UI"
-                                        font.weight: Font.Medium
-                                        color: "#FFFFFF"
-                                    }
-                                }
-                                
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        currentIndex = 2
-                                        currentPageTitle = "Tambah Buku"
-                                    }
-                                    hoverEnabled: true
-                                    onEntered: parent.color = currentIndex === 2 ? "#1565C0" : "#1565C0"
-                                    onExited: parent.color = currentIndex === 2 ? "#1565C0" : "transparent"
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Logout Button at Bottom
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 80
-                        color: "transparent"
-                        
+        spacing: 0
+
+        // ========== SIDEBAR ==========
+        Rectangle {
+            id: sidebar
+            Layout.preferredWidth: 280
+            Layout.fillHeight: true
+            color: primaryDark
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 0
+
+                // Logo Area
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 150
+                    color: "transparent"
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 10
+
                         Rectangle {
-                            width: parent.width - 24
-                            height: 48
-                            anchors.centerIn: parent
-                            color: "#D32F2F"
-                            radius: 8
-                            
-                            RowLayout {
+                            Layout.alignment: Qt.AlignHCenter
+                            width: 60
+                            height: 60
+                            radius: 12
+                            color: "white"
+
+                            Text {
                                 anchors.centerIn: parent
-                                spacing: 10
-                                
-                                Text {
-                                    text: "🚪"
-                                    font.pixelSize: 20
-                                    color: "#FFFFFF"
-                                }
-                                
-                                Text {
-                                    text: "Logout"
-                                    font.pixelSize: 15
-                                    font.family: "Segoe UI"
-                                    font.weight: Font.DemiBold
-                                    color: "#FFFFFF"
+                                text: "📚"
+                                font.pixelSize: 32
+                            }
+                        }
+
+                        Text {
+                            text: "DIGITAL\nLIBRARY"
+                            color: "white"
+                            font.bold: true
+                            font.pixelSize: 18
+                            horizontalAlignment: Text.AlignHCenter
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+
+                        Text {
+                            text: "Sistem Perpustakaan"
+                            color: "#90CAF9"
+                            font.pixelSize: 12
+                            horizontalAlignment: Text.AlignHCenter
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                    }
+                }
+
+                // Separator
+                Rectangle {
+                    Layout.fillWidth: true;
+                    height: 1;
+                    color: "#2196F3"
+                    opacity: 0.3
+                }
+
+                // Navigation Menu
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 20
+                    Layout.leftMargin: 10
+                    Layout.rightMargin: 10
+                    spacing: 8
+
+                    // Menu Button Component
+                    component MenuButton: Rectangle {
+                        property string icon: ""
+                        property string label: ""
+                        property int index: 0
+
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 48
+                        radius: 8
+                        color: currentIndex === index ? primaryColor : "transparent"
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 20
+                            spacing: 15
+
+                            Text {
+                                text: icon
+                                font.pixelSize: 18
+                                color: currentIndex === index ? "white" : "#BBDEFB"
+                            }
+
+                            Text {
+                                text: label
+                                font.pixelSize: 14
+                                font.bold: currentIndex === index
+                                color: currentIndex === index ? "white" : "#E3F2FD"
+                            }
+                        }
+
+                        Rectangle {
+                            visible: currentIndex === index
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 4
+                            height: 24
+                            radius: 2
+                            color: accentColor
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                currentIndex = index
+                                currentPageTitle = label
+                            }
+                        }
+                    }
+
+                    MenuButton { icon: "📊"; label: "Dashboard"; index: 0 }
+                    MenuButton { icon: "📚"; label: "Katalog Buku"; index: 1 }
+                    MenuButton { icon: "➕"; label: "Manajemen Buku"; index: 2 }
+                    MenuButton { icon: "📈"; label: "Statistik"; index: 3 }
+                    MenuButton { icon: "⚙️"; label: "Pengaturan"; index: 4 }
+                }
+
+                // Spacer
+                Item { Layout.fillHeight: true }
+
+                // User Info
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 80
+                    Layout.margins: 16
+                    color: "transparent"
+
+                    RowLayout {
+                        anchors.fill: parent
+                        spacing: 12
+
+                        Rectangle {
+                            Layout.preferredWidth: 48
+                            Layout.preferredHeight: 48
+                            radius: 24
+                            color: primaryColor
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "👤"
+                                font.pixelSize: 20
+                                color: "white"
+                            }
+                        }
+
+                        ColumnLayout {
+                            spacing: 2
+
+                            Text {
+                                text: database ? database.getCurrentUsername() : "Guest"
+                                color: "white"
+                                font.bold: true
+                                font.pixelSize: 14
+                            }
+
+                            Text {
+                                text: "Administrator"
+                                color: "#90CAF9"
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
+                }
+
+                // Logout Button
+                Button {
+                    Layout.fillWidth: true
+                    Layout.margins: 16
+                    Layout.preferredHeight: 45
+                    text: "Keluar"
+
+                    background: Rectangle {
+                        color: "#D32F2F"
+                        radius: 8
+                        border.width: 0
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 8
+                            color: parent.color
+                            opacity: parent.parent.hovered ? 0.8 : 1.0
+                        }
+                    }
+
+                    contentItem: RowLayout {
+                        spacing: 10
+
+                        Text {
+                            text: "🚪"
+                            font.pixelSize: 16
+                            color: "white"
+                        }
+
+                        Text {
+                            text: parent.parent.text
+                            color: "white"
+                            font.bold: true
+                            font.pixelSize: 14
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                    }
+
+                    onClicked: logoutSystem()
+                }
+
+                Item { Layout.preferredHeight: 20 }
+            }
+        }
+
+        // ========== MAIN CONTENT AREA ==========
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 0
+
+            // Header
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 80
+                color: "white"
+
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    width: parent.width
+                    height: 1
+                    color: "#E0E0E0"
+                    opacity: 0.5
+                }
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 30
+                    anchors.rightMargin: 30
+                    spacing: 20
+
+                    // Page Title
+                    ColumnLayout {
+                        spacing: 4
+
+                        Text {
+                            text: currentPageTitle
+                            font.pixelSize: 24
+                            font.bold: true
+                            color: textPrimary
+                        }
+
+                        Text {
+                            text: {
+                                var date = new Date()
+                                var days = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"]
+                                var months = ["Januari", "Februari", "Maret", "April", "Mei", "Juni",
+                                             "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+                                return days[date.getDay()] + ", " + date.getDate() + " " +
+                                       months[date.getMonth()] + " " + date.getFullYear()
+                            }
+                            font.pixelSize: 12
+                            color: textSecondary
+                        }
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    // Search Bar
+                    Rectangle {
+                        Layout.preferredWidth: 300
+                        Layout.preferredHeight: 40
+                        radius: 20
+                        color: background
+                        border.color: "#E0E0E0"
+                        border.width: 1
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 15
+                            anchors.rightMargin: 15
+                            spacing: 10
+
+                            Text {
+                                text: "🔍"
+                                font.pixelSize: 14
+                                color: textSecondary
+                            }
+
+                            TextField {
+                                Layout.fillWidth: true
+                                placeholderText: "Cari buku..."
+                                font.pixelSize: 13
+                                background: Item {}
+                                onTextChanged: {
+                                    if (currentIndex === 1 && stockPage) {
+                                        stockPage.searchText = text
+                                        stockPage.performSearch()
+                                    }
                                 }
                             }
-                            
+                        }
+                    }
+
+                    // Status Indicators
+                    RowLayout {
+                        spacing: 20
+
+                        Rectangle {
+                            implicitWidth: 40
+                            implicitHeight: 40
+                            radius: 20
+                            color: primaryLight
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "📖"
+                                font.pixelSize: 18
+                            }
+
                             MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: logout()
-                                hoverEnabled: true
-                                onEntered: parent.color = "#B71C1C"
-                                onExited: parent.color = "#D32F2F"
+                                onClicked: currentIndex = 1
+                            }
+                        }
+
+                        Rectangle {
+                            implicitWidth: 40
+                            implicitHeight: 40
+                            radius: 20
+                            color: primaryLight
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "🔔"
+                                font.pixelSize: 18
                             }
                         }
                     }
                 }
             }
-            
-            // Right Content Area
-            ColumnLayout {
+
+            // Page Content
+            Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                spacing: 0
-                
-                // Top Bar Header
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 75
-                    color: "#FFFFFF"
-                    
-                    layer.enabled: true
-                    layer.effect: Item {
-                        ShaderEffect {
-                            property real shadow: 0.08
-                        }
-                    }
-                    
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: 36
-                        anchors.rightMargin: 36
-                        spacing: 0
-                        
-                        Text {
-                            text: currentPageTitle
-                            font.pixelSize: 26
-                            font.family: "Segoe UI"
-                            font.weight: Font.Bold
-                            color: "#1F2937"
-                        }
-                        
-                        Item { Layout.fillWidth: true }
-                        
-                        Rectangle {
-                            Layout.preferredWidth: 150
-                            Layout.preferredHeight: 40
-                            radius: 20
-                            color: "#F3F4F6"
-                            
-                            RowLayout {
-                                anchors.centerIn: parent
-                                spacing: 10
-                                
-                                Text {
-                                    text: "👤"
-                                    font.pixelSize: 18
-                                }
-                                
-                                Text {
-                                    text: database ? database.getCurrentUsername() : "User"
-                                    font.pixelSize: 14
-                                    font.family: "Segoe UI"
-                                    font.weight: Font.Medium
-                                    color: "#374151"
-                                    elide: Text.ElideRight
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // StackLayout for Pages
+                color: background
+
                 StackLayout {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
+                    id: contentStack
+                    anchors.fill: parent
                     currentIndex: mainWindow.currentIndex
-                    
-                    // Page 0: Dashboard
-                    Dashboard {}
-                    
-                    // Page 1: Stock (Katalog)
-                    Stock {}
-                    
-                    // Page 2: ManageStore
-                    ManageStore {}
+
+                    Dashboard { id: dashboardPage }
+                    Stock { id: stockPage }
+                    ManageStore { id: managePage }
+                    Overview { id: statsPage }
+                    Settings { id: settingsPage }
                 }
             }
         }
-        
-        // Login Screen (shown when not logged in)
-        Loader {
+    }
+
+    // ========== LOGIN OVERLAY ==========
+    Loader {
+        anchors.fill: parent
+        z: 9999
+        active: !isUserLoggedIn
+        sourceComponent: Login {
+            onLoginSuccess: {
+                if (appLogic) appLogic.login()
+            }
+        }
+
+        Rectangle {
             anchors.fill: parent
-            sourceComponent: loginComponent
-            active: !appLogic || !appLogic.loggedIn
+            color: background
+            visible: parent.active
+            z: -1
+        }
+    }
+
+    // ========== STATUS TOAST ==========
+    Popup {
+        id: toast
+        anchors.centerIn: parent
+        width: 300
+        height: 60
+        modal: false
+        closePolicy: Popup.NoAutoClose
+
+        background: Rectangle {
+            color: "#323232"
+            radius: 8
+            opacity: 0.9
+        }
+
+        contentItem: Text {
+            text: toast.text
+            color: "white"
+            font.pixelSize: 14
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+
+        property string text: ""
+
+        function show(message, duration = 2000) {
+            text = message
+            open()
+            timer.interval = duration
+            timer.start()
+        }
+
+        Timer {
+            id: timer
+            onTriggered: toast.close()
         }
     }
 }

@@ -18,6 +18,8 @@ constexpr const char *kDatabaseName = "perpustakaan.db";
 Database::Database(QObject *parent)
     : QObject(parent)
     , currentUserId(-1)
+    , m_sortedByTitle(false)
+    , m_sortedByYear(false)
 {
 }
 
@@ -166,6 +168,8 @@ void Database::logoutUser()
     currentUsername.clear();
     m_books.clear();
     m_genreGraph.clear();
+    m_sortedByTitle = false;
+    m_sortedByYear = false;
     emit booksChanged();
 }
 
@@ -224,6 +228,8 @@ void Database::loadBooks()
     }
 
     m_books.clear();
+    m_sortedByTitle = false;
+    m_sortedByYear = false;
 
     QSqlQuery query(db);
     query.prepare("SELECT id, title, author, genre, publisher, year, copies, image_path FROM books WHERE user_id = ?");
@@ -250,6 +256,7 @@ void Database::loadBooks()
     // Build graph after loading
     buildGraph();
     emit booksChanged();
+    emit sortStatusChanged();
 }
 
 QVariantList Database::getAllBooks()
@@ -307,10 +314,15 @@ bool Database::addBook(const QString &title,
     book.image_path = image_path.trimmed();
 
     m_books.append(book);
+    
+    // Reset sorting flags since new book is added
+    m_sortedByTitle = false;
+    m_sortedByYear = false;
 
     // Rebuild graph
     buildGraph();
     emit booksChanged();
+    emit sortStatusChanged();
 
     return true;
 }
@@ -365,6 +377,10 @@ bool Database::updateBook(int id,
             book.year = year;
             book.copies = copies;
             book.image_path = image_path.trimmed();
+            
+            // Reset sorting flags since book is updated
+            m_sortedByTitle = false;
+            m_sortedByYear = false;
             break;
         }
     }
@@ -372,6 +388,7 @@ bool Database::updateBook(int id,
     // Rebuild graph
     buildGraph();
     emit booksChanged();
+    emit sortStatusChanged();
 
     return true;
 }
@@ -403,6 +420,10 @@ bool Database::deleteBook(int id)
     for (int i = 0; i < m_books.size(); ++i) {
         if (m_books[i].id == id) {
             m_books.remove(i);
+            
+            // Reset sorting flags since book is removed
+            m_sortedByTitle = false;
+            m_sortedByYear = false;
             break;
         }
     }
@@ -410,12 +431,13 @@ bool Database::deleteBook(int id)
     // Rebuild graph
     buildGraph();
     emit booksChanged();
+    emit sortStatusChanged();
 
     return true;
 }
 
 // ============================================================================
-// ALGORITHM 1: MERGE SORT (Manual Implementation)
+// ALGORITHM 1: MERGE SORT (Manual Implementation) - FIXED
 // ============================================================================
 
 void Database::sortBooks(const QString &criteria)
@@ -425,22 +447,55 @@ void Database::sortBooks(const QString &criteria)
     }
 
     bool byTitle = (criteria.toLower() == "title");
+    bool byYear = (criteria.toLower() == "year");
+    
+    if (!byTitle && !byYear) {
+        qDebug() << "Error: Invalid sort criteria. Use 'title' or 'year'";
+        return;
+    }
+
+    // Reset sorting flags
+    m_sortedByTitle = false;
+    m_sortedByYear = false;
+    
+    // Sort using merge sort
     mergeSort(m_books, 0, m_books.size() - 1, byTitle);
+    
+    // Update sorting flags
+    if (byTitle) {
+        m_sortedByTitle = true;
+    } else {
+        m_sortedByYear = true;
+    }
+    
     emit booksChanged();
+    emit sortStatusChanged();
+}
+
+bool Database::isSortedByTitle() const
+{
+    return m_sortedByTitle;
+}
+
+bool Database::isSortedByYear() const
+{
+    return m_sortedByYear;
 }
 
 void Database::mergeSort(QVector<Book>& list, int left, int right, bool byTitle)
 {
-    if (left < right) {
-        int mid = left + (right - left) / 2;
-
-        // Sort first and second halves
-        mergeSort(list, left, mid, byTitle);
-        mergeSort(list, mid + 1, right, byTitle);
-
-        // Merge the sorted halves
-        merge(list, left, mid, right, byTitle);
+    if (left >= right) {
+        return;
     }
+
+    int mid = left + (right - left) / 2;
+
+    // Sort first and second halves
+    mergeSort(list, left, mid, byTitle);
+    mergeSort(list, mid + 1, right, byTitle);
+
+    // Merge the sorted halves
+    merge(list, left, mid, right, byTitle);
 }
 
 void Database::merge(QVector<Book>& list, int left, int mid, int right, bool byTitle)
@@ -453,20 +508,24 @@ void Database::merge(QVector<Book>& list, int left, int mid, int right, bool byT
     QVector<Book> rightVec(n2);
 
     // Copy data to temp vectors
-    for (int i = 0; i < n1; i++)
+    for (int i = 0; i < n1; i++) {
         leftVec[i] = list[left + i];
-    for (int j = 0; j < n2; j++)
+    }
+    for (int j = 0; j < n2; j++) {
         rightVec[j] = list[mid + 1 + j];
+    }
 
     // Merge the temp vectors back
     int i = 0, j = 0, k = left;
 
     while (i < n1 && j < n2) {
-        bool leftIsLess;
+        bool leftIsLess = false;
+        
         if (byTitle) {
-            leftIsLess = leftVec[i].title.toLower() <= rightVec[j].title.toLower();
+            // Case-insensitive string comparison
+            leftIsLess = leftVec[i].title.compare(rightVec[j].title, Qt::CaseInsensitive) <= 0;
         } else {
-            // Sort by year
+            // Numeric comparison for year
             leftIsLess = leftVec[i].year <= rightVec[j].year;
         }
 
@@ -495,52 +554,15 @@ void Database::merge(QVector<Book>& list, int left, int mid, int right, bool byT
 }
 
 // ============================================================================
-// ALGORITHM 2: BINARY SEARCH (Manual Implementation)
+// ALGORITHM 2: BINARY SEARCH (Manual Implementation) - FIXED
 // ============================================================================
 
-QVariantList Database::searchBook(const QString &query)
+void Database::ensureSortedForSearch()
 {
-    QVariantList results;
-
-    if (query.trimmed().isEmpty()) {
-        return results;
+    // Ensure the list is sorted by title for binary search to work
+    if (!m_sortedByTitle && !m_books.isEmpty()) {
+        sortBooks("title");
     }
-
-    QString searchQuery = query.trimmed().toLower();
-
-    // First, try binary search if sorted by title
-    int index = binarySearch(searchQuery);
-    
-    if (index != -1) {
-        // Found exact match, return it
-        results.append(bookToVariantMap(m_books[index]));
-        
-        // Check for adjacent matches (in case of multiple exact matches)
-        int left = index - 1;
-        while (left >= 0 && m_books[left].title.toLower() == searchQuery) {
-            results.prepend(bookToVariantMap(m_books[left]));
-            left--;
-        }
-        
-        int right = index + 1;
-        while (right < m_books.size() && m_books[right].title.toLower() == searchQuery) {
-            results.append(bookToVariantMap(m_books[right]));
-            right++;
-        }
-        
-        return results;
-    }
-
-    // If not found by binary search, do linear search for partial matches
-    for (const Book &book : m_books) {
-        if (book.title.toLower().contains(searchQuery) ||
-            book.author.toLower().contains(searchQuery) ||
-            book.genre.toLower().contains(searchQuery)) {
-            results.append(bookToVariantMap(book));
-        }
-    }
-
-    return results;
 }
 
 int Database::binarySearch(const QString &title)
@@ -549,16 +571,18 @@ int Database::binarySearch(const QString &title)
         return -1;
     }
 
-    QString searchTitle = title.toLower();
+    ensureSortedForSearch();
+
+    QString searchTitle = title.trimmed().toLower();
     int left = 0;
     int right = m_books.size() - 1;
 
     while (left <= right) {
         int mid = left + (right - left) / 2;
-        QString midTitle = m_books[mid].title.toLower();
+        QString midTitle = m_books[mid].title.trimmed().toLower();
 
         if (midTitle == searchTitle) {
-            return mid;  // Found
+            return mid;  // Found exact match
         } else if (midTitle < searchTitle) {
             left = mid + 1;
         } else {
@@ -569,8 +593,69 @@ int Database::binarySearch(const QString &title)
     return -1;  // Not found
 }
 
+QVariantList Database::searchBook(const QString &query)
+{
+    QVariantList results;
+
+    if (query.trimmed().isEmpty()) {
+        // Return all books if query is empty
+        return getAllBooks();
+    }
+
+    QString searchQuery = query.trimmed().toLower();
+
+    // First, try binary search for exact title match
+    int exactIndex = binarySearch(query);
+    
+    if (exactIndex != -1) {
+        // Found exact match, return it
+        results.append(bookToVariantMap(m_books[exactIndex]));
+        
+        // Check for adjacent matches (in case of multiple exact matches)
+        int left = exactIndex - 1;
+        while (left >= 0 && m_books[left].title.trimmed().compare(query.trimmed(), Qt::CaseInsensitive) == 0) {
+            results.prepend(bookToVariantMap(m_books[left]));
+            left--;
+        }
+        
+        int right = exactIndex + 1;
+        while (right < m_books.size() && m_books[right].title.trimmed().compare(query.trimmed(), Qt::CaseInsensitive) == 0) {
+            results.append(bookToVariantMap(m_books[right]));
+            right++;
+        }
+        
+        // Return exact matches first
+        return results;
+    }
+
+    // If not found by binary search, do linear search for partial matches
+    for (const Book &book : m_books) {
+        if (book.title.trimmed().toLower().contains(searchQuery) ||
+            book.author.trimmed().toLower().contains(searchQuery) ||
+            book.genre.trimmed().toLower().contains(searchQuery) ||
+            book.publisher.trimmed().toLower().contains(searchQuery)) {
+            
+            // Check if book is already in results
+            bool alreadyExists = false;
+            for (const QVariant &result : results) {
+                QVariantMap map = result.toMap();
+                if (map["id"].toInt() == book.id) {
+                    alreadyExists = true;
+                    break;
+                }
+            }
+            
+            if (!alreadyExists) {
+                results.append(bookToVariantMap(book));
+            }
+        }
+    }
+
+    return results;
+}
+
 // ============================================================================
-// ALGORITHM 3: GRAPH (Adjacency List for Recommendations)
+// ALGORITHM 3: GRAPH (Adjacency List for Recommendations) - IMPROVED
 // ============================================================================
 
 void Database::buildGraph()
@@ -587,6 +672,18 @@ void Database::buildGraph()
             m_genreGraph[genre].append(book.id);
         }
     }
+    
+    // Also build connections by author for better recommendations
+    QMap<QString, QVector<int>> authorGraph;
+    for (const Book &book : m_books) {
+        QString author = book.author.trimmed().toLower();
+        if (!author.isEmpty()) {
+            authorGraph[author].append(book.id);
+        }
+    }
+    
+    // Combine genre and author connections (optional enhancement)
+    // You can use this for more diverse recommendations
 }
 
 QVariantList Database::getRelatedBooks(int bookId)
@@ -597,11 +694,14 @@ QVariantList Database::getRelatedBooks(int bookId)
         return recommendations;
     }
 
-    // Find the book by ID
+    // Find the book by ID and its genre
     QString bookGenre;
+    QString bookAuthor;
+    
     for (const Book &book : m_books) {
         if (book.id == bookId) {
             bookGenre = book.genre.trimmed().toLower();
+            bookAuthor = book.author.trimmed().toLower();
             break;
         }
     }
@@ -622,10 +722,19 @@ QVariantList Database::getRelatedBooks(int bookId)
         if (id != bookId) {
             for (const Book &book : m_books) {
                 if (book.id == id) {
-                    recommendations.append(bookToVariantMap(book));
+                    // Prioritize books with same author for better recommendations
+                    bool sameAuthor = book.author.trimmed().compare(bookAuthor, Qt::CaseInsensitive) == 0;
+                    QVariantMap bookMap = bookToVariantMap(book);
+                    bookMap.insert("sameAuthor", sameAuthor);
+                    recommendations.append(bookMap);
                     break;
                 }
             }
+        }
+        
+        // Limit to 5 recommendations max
+        if (recommendations.size() >= 5) {
+            break;
         }
     }
 
@@ -685,6 +794,20 @@ QVariantList Database::booksToVariantList(const QVector<Book> &list) const
         result.append(bookToVariantMap(book));
     }
     return result;
+}
+
+Database::Book Database::variantMapToBook(const QVariantMap &map) const
+{
+    Book book;
+    book.id = map.value("id").toInt();
+    book.title = map.value("title").toString();
+    book.author = map.value("author").toString();
+    book.genre = map.value("genre").toString();
+    book.publisher = map.value("publisher").toString();
+    book.year = map.value("year").toInt();
+    book.copies = map.value("copies").toInt();
+    book.image_path = map.value("image_path").toString();
+    return book;
 }
 
 // ============================================================================

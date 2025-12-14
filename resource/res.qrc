@@ -5,7 +5,9 @@
         <file>ManageStore.qml</file>
         <file>Stock.qml</file>
         <file>Dashboard.qml</file>
-        <file>Overview.qml</file>        <file>SettingsPopup.qml</file>
+        <file>Overview.qml</file>
+        <file>Settings.qml</file>
+        <file>SettingsPopup.qml</file>
         <file>ForgotPasswordDialog.qml</file>        <file>CircularProfilePhoto.qml</file>
         <file>test_weekly_trend.qml</file>
         <file>test_circular_photo.qml</file>

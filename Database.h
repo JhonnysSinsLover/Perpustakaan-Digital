@@ -11,6 +11,7 @@
 #include <QVector>
 #include <QMap>
 #include <QString>
+#include <algorithm>
 
 class Database : public QObject
 {
@@ -30,6 +31,9 @@ public:
         int year = 0;
         int copies = 0;
         QString image_path;
+        
+        // For graph connections
+        QVector<int> relatedBooks;
     };
 
     // ========== Initialization ==========
@@ -72,9 +76,14 @@ public:
     // ========== Statistics ==========
     Q_INVOKABLE QString getTopGenre();
     Q_INVOKABLE QString getLastAddedTitle();
+    
+    // ========== Sorting State ==========
+    Q_INVOKABLE bool isSortedByTitle() const;
+    Q_INVOKABLE bool isSortedByYear() const;
 
 signals:
     void booksChanged();
+    void sortStatusChanged();
 
 private:
     // Database
@@ -84,9 +93,13 @@ private:
 
     // ========== In-Memory Cache ==========
     QVector<Book> m_books;
+    
+    // ========== Sorting State ==========
+    bool m_sortedByTitle = false;
+    bool m_sortedByYear = false;
 
     // ========== Graph for Recommendations ==========
-    QMap<QString, QVector<int>> m_genreGraph;
+    QMap<QString, QVector<int>> m_genreGraph;  // genre -> list of bookIds
 
     // Helper methods
     bool createTables();
@@ -101,13 +114,21 @@ private:
 
     // Binary Search
     int binarySearch(const QString &title);
+    
+    // Ensure list is sorted for binary search
+    void ensureSortedForSearch();
+    
+    // Linear search fallback
+    QVector<Book> linearSearch(const QString &query);
 
     // Graph
     void buildGraph();
+    void addGraphConnection(int book1Id, int book2Id);
 
     // Conversion helpers
     QVariantMap bookToVariantMap(const Book &book) const;
     QVariantList booksToVariantList(const QVector<Book> &list) const;
+    Book variantMapToBook(const QVariantMap &map) const;
 };
 
 #endif // DATABASE_H
